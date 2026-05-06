@@ -601,8 +601,8 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
         console.log('   Pressed Enter on EXCEL button!');
         
         // SAVE
-        console.log('   Waiting 20s for Save Dialog...');
-        await new Promise(r => setTimeout(r, 20000)); 
+        console.log('   Waiting 3min for Save Dialog...');
+        await new Promise(r => setTimeout(r, 180000)); 
         
         console.log('   Clicking SAVE (Floppy Disk)...');
         let saveClicked = false;
