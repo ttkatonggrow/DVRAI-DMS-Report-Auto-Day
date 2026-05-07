@@ -245,7 +245,7 @@ async function generatePDFSummary(page, pivotData, dateStr) {
     const maxYawnCount = top10Yawning.length > 0 ? top10Yawning[0].count : 1;
     const maxSleepCount = top10Sleeping.length > 0 ? top10Sleeping[0].count : 1;
 
-    // 2. สร้าง HTML
+    // 2. สร้าง HTML (เวลาเป็น Day Shift)
     const html = `
     <!DOCTYPE html>
     <html>
@@ -285,7 +285,7 @@ async function generatePDFSummary(page, pivotData, dateStr) {
             <div style="text-align: center; padding-top: 60px;">
                 <h1 style="font-size: 40px;">รายงานสรุปพฤติกรรมการขับขี่ (DMS)</h1>
                 <div style="font-size: 24px; color: #64748B;">Driver Monitoring System Report</div>
-                <div style="margin-top: 20px; font-size: 18px;">รอบเวลา: ${dateStr} 06:00 - 18:00 น.</div>
+                <div style="margin-top: 20px; font-size: 18px;">ประจำวันที่: ${dateStr} (รอบเวลา 06:00 - 18:00 น.)</div>
             </div>
 
             <div class="content">
@@ -377,7 +377,7 @@ async function generatePDFSummary(page, pivotData, dateStr) {
 
     // ใช้ page ปัจจุบันวาด HTML ลงไปแล้วสั่งปรินต์เป็น PDF
     await page.setContent(html, { waitUntil: 'networkidle0' });
-    const pdfPath = path.join(downloadPath, `DMS_Report_Summary_${dateStr}.pdf`);
+    const pdfPath = path.join(downloadPath, `DMS_Report_Summary_Day_${dateStr}.pdf`);
     await page.pdf({
         path: pdfPath,
         format: 'A4',
@@ -438,6 +438,7 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
 }
 
 (async () => {
+    // ระบุให้ชัดเจนใน Log ว่าเป็น Day Shift
     console.log(`--- Started GPS Report Automation (Day Shift) [${new Date().toLocaleString()}] ---`);
     
     if (!config.gpsUser || !config.gpsPass) {
@@ -483,7 +484,7 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
     try {
         const context = browser.defaultBrowserContext();
         await context.overridePermissions('http://cctvwli.com:3001', ['automatic-downloads']);
-    } catch(e) {}
+    } catch(e) { console.log('   Warning: Permission override failed (Non-critical):', e.message); }
 
     page.setDefaultTimeout(60000);
 
@@ -578,14 +579,40 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
         // --- STEP 6: Report Filters ---
         console.log('6. Configuring Report Filters...');
         let dmsClicked = false;
-        try {
-            dmsClicked = await reportPage.evaluate(() => {
-                const buttons = Array.from(document.querySelectorAll('button'));
-                const dmsBtn = buttons.find(b => b.textContent.includes('รายงาน DMS'));
-                if (dmsBtn) { dmsBtn.click(); return true; }
-                return false;
-            });
-        } catch (e) {}
+        
+        // 1. เพิ่ม Fallback ค้นหาปุ่มด้วย XPath (แม่นยำกว่า - ป้องกัน Error หาปุ่มไม่เจอ)
+        const dmsSelectors = [
+            '//*[local-name()="svg" and @data-testid="FaceIcon"]/..', 
+            '//*[@id="root"]/div/div[2]/div[1]/div/button[2]', 
+            '//button[contains(., "รายงาน DMS")]'
+        ];
+
+        for (const selector of dmsSelectors) {
+            if (dmsClicked) break;
+            try {
+                const xpSelector = `xpath/${selector}`;
+                await reportPage.waitForSelector(xpSelector, { visible: true, timeout: 5000 });
+                const elements = await reportPage.$$(xpSelector);
+                if (elements.length > 0) {
+                    await elements[0].click();
+                    console.log(`   Clicked DMS via XPath: ${selector}`);
+                    dmsClicked = true;
+                }
+            } catch (e) {}
+        }
+
+        // 2. ถ้าหาไม่เจอจริงๆ ค่อยใช้ JS Fallback
+        if (!dmsClicked) {
+            try {
+                dmsClicked = await reportPage.evaluate(() => {
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    const dmsBtn = buttons.find(b => b.textContent.includes('รายงาน DMS'));
+                    if (dmsBtn) { dmsBtn.click(); return true; }
+                    return false;
+                });
+                if (dmsClicked) console.log('   Clicked DMS via JS Text Search');
+            } catch (e) {}
+        }
         
         if (!dmsClicked) throw new Error('Could not select DMS Report button.');
 
@@ -604,8 +631,11 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
         await selectOption('แจ้งเตือนการหลับตา');
         await reportPage.keyboard.press('Escape');
 
+        // --- Date Inputs (Day Shift Logic: 06:00 to 18:00) ---
         const todayObj = new Date();
         const todayStr = todayObj.toISOString().slice(0, 10);
+
+        // ดึงข้อมูล 06:00 ของวันนี้ ถึง 18:00 ของวันนี้
         const startDateTime = `${todayStr} 06:00:00`;
         const endDateTime = `${todayStr} 18:00:00`;
         
@@ -632,7 +662,7 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
         await new Promise(r => setTimeout(r, 500));
         await reportPage.keyboard.press('Enter');
         
-        console.log('   Waiting 30min for Save Dialog...');
+        console.log('   Waiting 3min for Save Dialog...');
         await new Promise(r => setTimeout(r, 180000)); 
         
         console.log('   Clicking SAVE (Floppy Disk)...');
@@ -645,7 +675,7 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
         const ext = path.extname(downloadedFile);
         if (!ext || (ext !== '.xls' && ext !== '.xlsx')) {
             const dir = path.dirname(downloadedFile);
-            const newName = `GPS_Report_${todayStr}.xlsx`;
+            const newName = `GPS_Report_Day_${todayStr}.xlsx`;
             const newFilePath = path.join(dir, newName);
             if (fs.existsSync(newFilePath)) try { fs.unlinkSync(newFilePath); } catch(e) {}
             try { fs.renameSync(downloadedFile, newFilePath); downloadedFile = newFilePath; } catch (e) {}
@@ -663,7 +693,7 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
         // --- STEP 8: Email ---
         console.log(`8. Sending Email...`);
         await sendEmail(
-            `THAI TRACKING DMS REPORT: ${todayStr}`, 
+            `THAI TRACKING DMS REPORT: ${todayStr} (Day Shift)`, 
             `ถึง ผู้เกี่ยวข้อง\nรายงาน THAI TRACKING DMS REPORT รอบ 06:00 ถึง 18:00 น. และ สรุปกราฟ PDF Top 10\nด้วยความนับถือ\nBOT REPORT`, 
             [downloadedFile, pdfFilePath] // แนบไป 2 ไฟล์
         );
