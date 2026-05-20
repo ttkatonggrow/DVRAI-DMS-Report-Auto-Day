@@ -24,22 +24,20 @@ if (!fs.existsSync(downloadPath)) {
 }
 
 // =====================================================================
-// ส่วนที่ 1: ฟังก์ชันจัดกลุ่มเวลาและสร้างกราฟ (กะเช้า)
+// ส่วนที่ 1: ฟังก์ชันแยกวันที่และกราฟ (แก้ Bug เรื่อง Date Parsing)
 // =====================================================================
-function get30MinBin(dateTimeStr) {
-    if (!dateTimeStr) return null;
-    const dateTimeStrStr = dateTimeStr.toString();
-    const parts = dateTimeStrStr.split(' ');
-    if (parts.length < 2) return null; 
-    
-    const timePart = parts[1]; 
-    const timeParts = timePart.split(':');
-    if (timeParts.length < 2) return null;
-    
-    const hr = timeParts[0];
-    const min = timeParts[1];
-    const minBin = parseInt(min) >= 30 ? '30' : '00';
-    return `${hr}:${minBin}`;
+// ฟังก์ชันดึงค่าเวลาแบบปลอดภัย (ป้องกัน Error ข้อมูลจาก Excel)
+function extractDateAndTime(cellValue) {
+    if (!cellValue) return null;
+    if (cellValue instanceof Date) {
+        return cellValue;
+    }
+    const str = cellValue.toString().trim();
+    const d = new Date(str);
+    if (!isNaN(d.getTime())) {
+        return d;
+    }
+    return null;
 }
 
 const timeLabels = [
@@ -231,7 +229,6 @@ async function processExcelFile(filePath) {
             timeBins.closingEyes[label] = 0;
         });
 
-        // NEW: เตรียมตัวแปรเก็บ Timestamp สำหรับหาการหาวต่อเนื่อง (Topic 4)
         const yawnLogs = {}; 
 
         worksheet.eachRow((row, rowNumber) => {
@@ -243,7 +240,9 @@ async function processExcelFile(filePath) {
             
             const plate = plateCell.value ? plateCell.value.toString() : null;
             const type = typeCell.value ? typeCell.value.toString() : null;
-            const dtStr = dtCell.value ? dtCell.value.toString() : null;
+            
+            // อ่านเวลาด้วยฟังก์ชันใหม่ที่ปลอดภัยกว่า
+            const parsedDate = extractDateAndTime(dtCell.value);
 
             if (plate && type) {
                 if (!pivotData[plate]) pivotData[plate] = {};
@@ -252,16 +251,20 @@ async function processExcelFile(filePath) {
                 pivotData[plate][type]++;
                 allTypes.add(type);
                 
-                const bin = get30MinBin(dtStr);
+                let bin = null;
+                if (parsedDate) {
+                    const hr = String(parsedDate.getHours()).padStart(2, '0');
+                    const min = parsedDate.getMinutes();
+                    const minBin = min >= 30 ? '30' : '00';
+                    bin = `${hr}:${minBin}`;
+                }
                 
                 if (type === 'แจ้งเตือนการหาวนอน' || type === 'Yawning') {
                     if (bin && timeLabels.includes(bin)) timeBins.yawning[bin]++;
                     
-                    // เก็บ Timestamp ข้อมูลหาวนอน
-                    if (!yawnLogs[plate]) yawnLogs[plate] = [];
-                    if (dtStr) {
-                        const parsedDate = new Date(dtStr);
-                        if (!isNaN(parsedDate.getTime())) yawnLogs[plate].push(parsedDate);
+                    if (parsedDate) {
+                        if (!yawnLogs[plate]) yawnLogs[plate] = [];
+                        yawnLogs[plate].push(parsedDate);
                     }
                 } else if (type === 'แจ้งเตือนการหลับตา' || type === 'Closing eyes') {
                     if (bin && timeLabels.includes(bin)) timeBins.closingEyes[bin]++;
@@ -270,11 +273,10 @@ async function processExcelFile(filePath) {
         });
 
         // =====================================================================
-        // NEW: คำนวณหา "สถิติการหาวต่อเนื่องภายใน 5 นาที" (Topic 4)
+        // คำนวณหา "สถิติการหาวต่อเนื่องภายใน 5 นาที" (รวมถึงยอดนับรวม)
         // =====================================================================
         const continuousYawnStats = [];
         for (const plate in yawnLogs) {
-            // เรียงลำดับเวลาจากอดีต->ปัจจุบัน
             const times = yawnLogs[plate].sort((a, b) => a - b);
             
             let events = [];
@@ -284,28 +286,23 @@ async function processExcelFile(filePath) {
                 if (!currentEvent) {
                     currentEvent = { start: t, times: [t] };
                 } else {
-                    // หาผลต่างเวลา (นาที)
                     const diffMins = (t - currentEvent.start) / (1000 * 60);
                     
                     if (diffMins <= 5) {
-                        // อยู่ในหน้าต่าง 5 นาที นับรวมเข้า Event เดิม
                         currentEvent.times.push(t);
                     } else {
-                        // เกิน 5 นาที -> ปิด Event เดิม
-                        if (currentEvent.times.length > 1) { // เกณฑ์: มากกว่า 1 ครั้ง
+                        if (currentEvent.times.length > 1) { 
                             events.push({
                                 start: currentEvent.times[0],
                                 end: currentEvent.times[currentEvent.times.length - 1],
                                 count: currentEvent.times.length
                             });
                         }
-                        // เริ่มนับ Event ใหม่
                         currentEvent = { start: t, times: [t] };
                     }
                 }
             }
             
-            // เช็ค Event สุดท้ายที่อาจจะยังค้างอยู่ใน Loop
             if (currentEvent && currentEvent.times.length > 1) {
                 events.push({
                     start: currentEvent.times[0],
@@ -314,17 +311,18 @@ async function processExcelFile(filePath) {
                 });
             }
 
-            // ถ้ารถคันนี้มี Event หาวต่อเนื่อง ให้เก็บใส่ Array
             if (events.length > 0) {
+                // คำนวณหาจำนวนครั้งที่หาวรวมทุก Event
+                const totalYawnCount = events.reduce((sum, e) => sum + e.count, 0);
                 continuousYawnStats.push({
                     license: plate,
                     eventCount: events.length,
+                    totalYawnCount: totalYawnCount,
                     events: events
                 });
             }
         }
 
-        // เรียงลำดับรถที่มี Event เยอะที่สุดไปน้อยที่สุด
         continuousYawnStats.sort((a, b) => b.eventCount - a.eventCount);
         // =====================================================================
 
@@ -360,7 +358,6 @@ async function processExcelFile(filePath) {
         await workbook.xlsx.writeFile(outputFilePath);
         console.log(`   Excel file processed and saved to: ${outputFilePath}`);
         
-        // Return ส่งออกไปให้ PDF
         return { 
             filePath: outputFilePath, 
             pivotData: pivotData, 
@@ -375,11 +372,9 @@ async function processExcelFile(filePath) {
 }
 
 // ฟังก์ชันสร้าง PDF (DMS Dashboard)
-// NEW: รับพารามิเตอร์ continuousYawnStats
 async function generatePDFSummary(page, pivotData, dateStr, timeBins, continuousYawnStats) {
     console.log('   Generating PDF Summary Report...');
     
-    // 1. จัดเตรียมข้อมูล (เรียง Top 10)
     let yawningStats = [];
     let sleepingStats = [];
     let totalYawning = 0;
@@ -402,14 +397,12 @@ async function generatePDFSummary(page, pivotData, dateStr, timeBins, continuous
     const maxYawnCount = top10Yawning.length > 0 ? top10Yawning[0].count : 1;
     const maxSleepCount = top10Sleeping.length > 0 ? top10Sleeping[0].count : 1;
 
-    // สร้าง URL กราฟ
     const yawningData = timeLabels.map(label => timeBins.yawning[label] || 0);
     const closingEyesData = timeLabels.map(label => timeBins.closingEyes[label] || 0);
     
     const yawningChartImgUrl = generateChartUrl('yawning', timeLabels, yawningData);
     const closingEyesChartImgUrl = generateChartUrl('closingEyes', timeLabels, closingEyesData);
 
-    // 2. สร้าง HTML (เวลาเป็น Day Shift)
     const html = `
     <!DOCTYPE html>
     <html>
@@ -420,7 +413,6 @@ async function generatePDFSummary(page, pivotData, dateStr, timeBins, continuous
         @page { size: A4; margin: 0; }
         body { font-family: 'Noto Sans Thai', sans-serif; margin: 0; padding: 0; background: #fff; color: #333; }
         .page { width: 210mm; height: 296mm; position: relative; page-break-after: always; overflow: hidden; box-sizing: border-box;}
-        /* NEW CSS: auto-page สำหรับหน้าตารางที่อาจจะยาวเกิน 1 แผ่นกระดาษ */
         .auto-page { width: 210mm; min-height: 296mm; position: relative; page-break-after: always; box-sizing: border-box; background: #fff; padding-bottom: 40px; }
         
         .content { padding: 40px; }
@@ -550,7 +542,7 @@ async function generatePDFSummary(page, pivotData, dateStr, timeBins, continuous
             </div>
         </div>
 
-        <!-- NEW Page 5: Continuous Yawning -->
+        <!-- Page 5: Continuous Yawning -->
         <div class="auto-page">
             <div class="header-banner">4. สถิติการหาวต่อเนื่องภายใน 5 นาที</div>
             <div class="content" style="padding-top: 0;">
@@ -560,9 +552,10 @@ async function generatePDFSummary(page, pivotData, dateStr, timeBins, continuous
                 <table>
                     <thead>
                         <tr>
-                            <th style="width:50px;">No.</th>
-                            <th style="width:200px;">ทะเบียนรถ</th>
-                            <th style="width:120px; text-align:center;">จำนวน (Event)</th>
+                            <th style="width:40px;">No.</th>
+                            <th style="width:160px;">ทะเบียนรถ</th>
+                            <th style="width:100px; text-align:center;">จำนวน (Event)</th>
+                            <th style="width:120px; text-align:center;">หาวรวม (ครั้ง)</th>
                             <th>รายละเอียดช่วงเวลาที่เกิดเหตุ (Start - End)</th>
                         </tr>
                     </thead>
@@ -571,17 +564,22 @@ async function generatePDFSummary(page, pivotData, dateStr, timeBins, continuous
                         <tr>
                             <td>${idx + 1}</td>
                             <td><strong>${item.license}</strong></td>
-                            <td style="font-weight: bold; color: #DC2626; text-align:center;">${item.eventCount}</td>
+                            <td style="font-weight: bold; color: #DC2626; text-align:center; vertical-align: middle;">${item.eventCount}</td>
+                            <td style="font-weight: bold; color: #F59E0B; text-align:center; vertical-align: middle;">${item.totalYawnCount}</td>
                             <td style="font-size: 13px; line-height: 1.6;">
                                 ${item.events.map(e => {
                                     const pad = (n) => String(n).padStart(2, '0');
-                                    const t1 = \`\${pad(e.start.getHours())}:\${pad(e.start.getMinutes())}:\${pad(e.start.getSeconds())}\`;
-                                    const t2 = \`\${pad(e.end.getHours())}:\${pad(e.end.getMinutes())}:\${pad(e.end.getSeconds())}\`;
-                                    return \`• \${t1} ถึง \${t2} <span style="color:#F59E0B; font-weight:bold;">(\${e.count} ครั้ง)</span>\`;
+                                    // ตรวจสอบความปลอดภัย ป้องกัน Error .getHours()
+                                    if (e.start && e.start instanceof Date && e.end && e.end instanceof Date) {
+                                        const t1 = \`\${pad(e.start.getHours())}:\${pad(e.start.getMinutes())}:\${pad(e.start.getSeconds())}\`;
+                                        const t2 = \`\${pad(e.end.getHours())}:\${pad(e.end.getMinutes())}:\${pad(e.end.getSeconds())}\`;
+                                        return \`• \${t1} ถึง \${t2} <span style="color:#DC2626; font-weight:bold;">(\${e.count} ครั้ง)</span>\`;
+                                    }
+                                    return \`• ข้อมูลเวลาขัดข้อง <span style="color:#DC2626; font-weight:bold;">(\${e.count} ครั้ง)</span>\`;
                                 }).join('<br>')}
                             </td>
                         </tr>
-                        `).join('') : '<tr><td colspan="4" style="text-align:center; padding: 20px; color:#888;">ไม่มีประวัติการหาวต่อเนื่องในรอบเวลานี้</td></tr>'}
+                        `).join('') : '<tr><td colspan="5" style="text-align:center; padding: 20px; color:#888;">ไม่มีประวัติการหาวต่อเนื่องในรอบเวลานี้</td></tr>'}
                     </tbody>
                 </table>
             </div>
@@ -892,9 +890,8 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
         downloadedFile = processResult.filePath;
         const pivotData = processResult.pivotData;
         const timeBins = processResult.timeBins; 
-        const continuousYawnStats = processResult.continuousYawnStats; // NEW: รับค่าสถิติหาวต่อเนื่อง
+        const continuousYawnStats = processResult.continuousYawnStats;
 
-        // ส่งตัวแปรเข้าไปในฟังก์ชันสร้าง PDF
         const pdfFilePath = await generatePDFSummary(page, pivotData, todayStr, timeBins, continuousYawnStats);
 
         console.log(`8. Sending Email...`);
