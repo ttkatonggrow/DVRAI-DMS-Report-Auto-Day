@@ -579,11 +579,11 @@ async function generatePDFSummary(page, pivotData, dateStr, timeBins, continuous
                                     const pad = (n) => String(n).padStart(2, '0');
                                     // ตรวจสอบความปลอดภัย ป้องกัน Error .getHours()
                                     if (e.start && e.start instanceof Date && e.end && e.end instanceof Date) {
-                                        const t1 = \`\${pad(e.start.getHours())}:\${pad(e.start.getMinutes())}:\${pad(e.start.getSeconds())}\`;
-                                        const t2 = \`\${pad(e.end.getHours())}:\${pad(e.end.getMinutes())}:\${pad(e.end.getSeconds())}\`;
-                                        return \`• \${t1} ถึง \${t2} <span style="color:#DC2626; font-weight:bold;">(\${e.count} ครั้ง)</span>\`;
+                                        const t1 = `${pad(e.start.getHours())}:${pad(e.start.getMinutes())}:${pad(e.start.getSeconds())}`;
+                                        const t2 = `${pad(e.end.getHours())}:${pad(e.end.getMinutes())}:${pad(e.end.getSeconds())}`;
+                                        return `• ${t1} ถึง ${t2} <span style="color:#DC2626; font-weight:bold;">(${e.count} ครั้ง)</span>`;
                                     }
-                                    return \`• ข้อมูลเวลาขัดข้อง <span style="color:#DC2626; font-weight:bold;">(\${e.count} ครั้ง)</span>\`;
+                                    return `• ข้อมูลเวลาขัดข้อง <span style="color:#DC2626; font-weight:bold;">(${e.count} ครั้ง)</span>`;
                                 }).join('<br>')}
                             </td>
                         </tr>
