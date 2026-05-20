@@ -331,7 +331,13 @@ async function processExcelFile(filePath) {
             }
         }
 
-        continuousYawnStats.sort((a, b) => b.eventCount - a.eventCount);
+        // เรียงลำดับ: 1. หาวรวม (มากไปน้อย) -> 2. ถ้าหาวรวมเท่ากัน ให้เรียงตาม Event (มากไปน้อย)
+        continuousYawnStats.sort((a, b) => {
+            if (b.totalYawnCount !== a.totalYawnCount) {
+                return b.totalYawnCount - a.totalYawnCount; // เกณฑ์ที่ 1
+            }
+            return b.eventCount - a.eventCount; // เกณฑ์ที่ 2 (เมื่อเกณฑ์ที่ 1 เท่ากัน)
+        });
         // =====================================================================
 
         const pivotSheetName = "Summary_Pivot";
