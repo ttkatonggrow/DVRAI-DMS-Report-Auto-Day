@@ -13,7 +13,7 @@ const config = {
     emailFrom: process.env.EMAIL_FROM || '',
     emailPass: process.env.EMAIL_PASSWORD || '',
     emailTo: process.env.EMAIL_TO || '',
-    downloadTimeout: 40000
+    downloadTimeout: 120000 // ขยายเวลาเป็น 2 นาที ป้องกันโหลดไฟล์ไม่ทัน
 };
 
 const downloadPath = path.resolve(__dirname, 'downloads');
@@ -32,7 +32,15 @@ function extractDateAndTime(cellValue) {
     if (cellValue instanceof Date) {
         return cellValue;
     }
-    const str = cellValue.toString().trim();
+    let str = cellValue.toString().trim();
+    
+    // ดักจับ format DD/MM/YYYY HH:mm:ss ถ้าเจอแปลงเป็น YYYY-MM-DD
+    const regex = /^(\d{2})\/(\d{2})\/(\d{4}) (\d{2}:\d{2}:\d{2})$/;
+    const match = str.match(regex);
+    if (match) {
+        str = `${match[3]}-${match[2]}-${match[1]} ${match[4]}`;
+    }
+
     const d = new Date(str);
     if (!isNaN(d.getTime())) {
         return d;
@@ -589,7 +597,8 @@ async function generatePDFSummary(page, pivotData, dateStr, timeBins, continuous
     </html>
     `;
 
-    await page.setContent(html, { waitUntil: 'networkidle0' });
+    // เพิ่ม Timeout ป้องกันกราฟเรนเดอร์ไม่ทัน
+    await page.setContent(html, { waitUntil: 'networkidle0', timeout: 60000 });
     const pdfPath = path.join(downloadPath, `DMS_Report_Summary_Day_${dateStr}.pdf`);
     await page.pdf({
         path: pdfPath,
@@ -657,7 +666,7 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
     }
 
     const browser = await puppeteer.launch({
-        headless: "new",
+        headless: true, // แก้จาก "new" เป็น true ป้องกัน Warning
         ignoreHTTPSErrors: true, 
         args: [
             '--no-sandbox', 
@@ -838,8 +847,12 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
         await selectOption('แจ้งเตือนการหลับตา');
         await reportPage.keyboard.press('Escape');
 
-        const todayObj = new Date();
-        const todayStr = todayObj.toISOString().slice(0, 10);
+        // NEW: Fix Timezone ให้เป็นเวลาประเทศไทย (GMT+7) เสมอ
+        const thaiDateObj = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Bangkok" }));
+        const yyyy = thaiDateObj.getFullYear();
+        const mm = String(thaiDateObj.getMonth() + 1).padStart(2, '0');
+        const dd = String(thaiDateObj.getDate()).padStart(2, '0');
+        const todayStr = `${yyyy}-${mm}-${dd}`;
 
         const startDateTime = `${todayStr} 06:00:00`;
         const endDateTime = `${todayStr} 18:00:00`;
