@@ -1,10 +1,9 @@
-name: ThaiTracking DMS Automation Bot
+name: ThaiTracking DMS Automation Bot (Day Shift)
 
 on:
-  workflow_dispatch: # กดรันเอง
+  workflow_dispatch: 
   schedule:
     - cron: '5 11 * * *' # เวลา 11:05 UTC (18:05 ไทย)
-
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -28,12 +27,13 @@ jobs:
         EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
         EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }} # <<< สิ่งที่เพิ่มเข้ามา
       run: node index.js
 
     - name: Upload Error Screenshot (Debug)
-      if: failure() # ทำงานเฉพาะเมื่อ script error
+      if: failure()
       uses: actions/upload-artifact@v4
       with:
         name: error-debug-screenshot
         path: error_debug.png
-        retention-days: 1 # เก็บไฟล์ไว้แค่ 1 วัน
+        retention-days: 1
