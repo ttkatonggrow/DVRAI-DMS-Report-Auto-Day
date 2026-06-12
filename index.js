@@ -787,7 +787,7 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
         console.log(`8. Sending Email...`);
         await sendEmail(
             `THAI TRACKING DMS REPORT: ${todayStr} (Day Shift)`, 
-            `ถึง ผู้เกี่ยวข้อง\nรายงาน THAI TRACKING DMS REPORT รอบ 06:00 ถึง 18:00 น. และ สรุปกราฟ PDF Top 10\nhttps://script.google.com/macros/s/AKfycbzhTXXdegU_3Sx9gaRtcAJdWsIpudOWq-sUW5rxDGsqt2eX31MR3Ikk6-fhAlaV8Yd0uw/exec\nด้วยความนับถือ\nBOT REPORT`, 
+            `ถึง ผู้เกี่ยวข้อง\nเรื่อง รายงาน THAI TRACKING DMS REPORT รอบ 06:00 ถึง 18:00 น. และ สรุปกราฟ PDF Top 10\n\n\nhttps://script.google.com/macros/s/AKfycbzhTXXdegU_3Sx9gaRtcAJdWsIpudOWq-sUW5rxDGsqt2eX31MR3Ikk6-fhAlaV8Yd0uw/exec\n\n\nด้วยความนับถือ\nBOT REPORT`, 
             [downloadedFile, pdfFilePath] 
         );
 
