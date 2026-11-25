@@ -3,7 +3,7 @@ name: ThaiTracking DMS Automation Bot (Day Shift)
 on:
   workflow_dispatch: 
   schedule:
-    - cron: '5 11 * * *' # เวลา 11:05 UTC (18:05 ไทย)
+    - cron: '17 11 * * *' # เวลา 11:17 UTC (18:17 ไทย)
 jobs:
   run-bot:
     runs-on: ubuntu-latest
