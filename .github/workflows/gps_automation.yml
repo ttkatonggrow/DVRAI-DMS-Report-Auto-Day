@@ -1,12 +1,25 @@
 name: ThaiTracking DMS Automation Bot (Day Shift)
 
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
+    inputs:
+      report_date:
+        description: 'Report date in Bangkok (YYYY-MM-DD)'
+        required: true
+        type: string
+      check_only:
+        description: 'Check the date only (no GPS, Google Sheets, or email)'
+        required: true
+        type: boolean
+        default: true
   schedule:
     - cron: '31 11 * * *' # เวลา 11:31 UTC (18:31 ไทย)
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
 
     steps:
     - name: Checkout repository
@@ -22,13 +35,21 @@ jobs:
 
     - name: Run Puppeteer Script
       env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        REPORT_DATE: ${{ github.event.inputs.report_date || '' }}
+        CHECK_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.check_only }}
         GPS_USER: ${{ secrets.GPS_USER }}
         GPS_PASSWORD: ${{ secrets.GPS_PASSWORD }}
         EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
         EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         EMAIL_TO: ${{ secrets.EMAIL_TO }}
         GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }} # <<< สิ่งที่เพิ่มเข้ามา
-      run: node index.js
+      run: |
+        if [ "$CHECK_ONLY" = "true" ]; then
+          node index.js --check-report-date
+        else
+          node index.js
+        fi
 
     - name: Upload Error Screenshot (Debug)
       if: failure()
