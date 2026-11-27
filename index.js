@@ -1,11 +1,11 @@
-const puppeteer = require('puppeteer');
-const Tesseract = require('tesseract.js');
-const nodemailer = require('nodemailer');
+let puppeteer;
+let Tesseract;
+let nodemailer;
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const ExcelJS = require('exceljs');
-const { google } = require('googleapis');
+let ExcelJS;
+let google;
 
 // --- CONFIGURATION ---
 const config = {
@@ -22,9 +22,7 @@ const config = {
 const downloadPath = path.resolve(__dirname, 'downloads');
 const defaultDownloadPath = path.join(os.homedir(), 'Downloads');
 
-if (!fs.existsSync(downloadPath)) {
-    fs.mkdirSync(downloadPath);
-}
+
 
 // ฟังก์ชันรอไฟล์โหลด
 async function waitForFileToDownload(timeout) {
@@ -524,8 +522,100 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
     }
 }
 
+// Freeze the Bangkok report window before any GPS work.
+const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
+const toBangkokClock = date => new Date(date.getTime() + BANGKOK_OFFSET_MS);
+
+function validateReportDate(value) {
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !Number.isFinite(parsed.getTime()) ||
+        parsed.toISOString().slice(0, 10) !== value) {
+        throw new Error('REPORT_DATE must be a valid YYYY-MM-DD date.');
+    }
+    return value;
+}
+
+async function getScheduledRunCreatedAt(env, fetchRun) {
+    const repo = env.GITHUB_REPOSITORY || '';
+    const runId = env.GITHUB_RUN_ID || '';
+    const token = (env.GH_TOKEN || env.GITHUB_TOKEN || '').trim();
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^\d+$/.test(runId) || !token) {
+        throw new Error('GitHub run metadata or GH_TOKEN missing; check workflow permissions (actions: read).');
+    }
+    const url = new URL(`${(env.GITHUB_API_URL || 'https://api.github.com').replace(/\/+$/, '')}/repos/${repo}/actions/runs/${runId}`);
+    if (url.protocol !== 'https:' || url.username || url.password) throw new Error('Invalid GitHub API URL.');
+    const response = await fetchRun(url, {
+        headers: { Accept: 'application/vnd.github+json', Authorization: `Bearer ${token}` },
+        redirect: 'error',
+        signal: AbortSignal.timeout(15000),
+    });
+    if (!response.ok) throw new Error(`GitHub API HTTP ${response.status}; check actions: read or run manually with report_date.`);
+    const run = await response.json();
+    if (String(run.id) !== runId || run.event !== 'schedule' || typeof run.created_at !== 'string' ||
+        !run.created_at.endsWith('Z') || !Number.isFinite(Date.parse(run.created_at))) {
+        throw new Error('Invalid GitHub scheduled run metadata; run manually with report_date.');
+    }
+    return new Date(run.created_at);
+}
+
+async function resolveReportWindow({ startedAt = new Date(), env = process.env, fetchRun = globalThis.fetch } = {}) {
+    const explicit = (env.REPORT_DATE || '').trim();
+    let reportDate;
+    let source;
+    let createdAt;
+    if (explicit) {
+        reportDate = validateReportDate(explicit);
+        source = 'REPORT_DATE';
+    } else {
+        if (env.GITHUB_ACTIONS === 'true') {
+            if (env.GITHUB_EVENT_NAME !== 'schedule') {
+                throw new Error('Manual and other GitHub triggers must supply REPORT_DATE (YYYY-MM-DD).');
+            }
+            createdAt = await getScheduledRunCreatedAt(env, fetchRun);
+            source = 'github-run-created-at';
+        } else {
+            source = 'local-06-cutoff';
+        }
+        const clock = toBangkokClock(createdAt || startedAt);
+        const hour = clock.getUTCHours();
+        if (createdAt && hour >= 6 && hour < 18) {
+            throw new Error('GitHub created the run between 06:00 and 17:59 Bangkok time; run manually with report_date to avoid selecting the wrong shift.');
+        }
+        if (hour < 6) clock.setUTCDate(clock.getUTCDate() - 1);
+        reportDate = clock.toISOString().slice(0, 10);
+    }
+    if (startedAt.getTime() < Date.parse(`${reportDate}T18:00:00+07:00`)) {
+        throw new Error(`The shift for ${reportDate} has not ended (18:00 Bangkok time).`);
+    }
+    return Object.freeze({ reportDate, source, createdAt, startDateTime: `${reportDate} 06:00:00`, endDateTime: `${reportDate} 18:00:00` });
+}
+
+function logReportWindow(window, startedAt) {
+    const thai = date => `${toBangkokClock(date).toISOString().slice(0, 19)}+07:00`;
+    console.log(`[Date] Script started: ${thai(startedAt)}`);
+    if (window.createdAt) console.log(`[Date] GitHub run created: ${thai(window.createdAt)} (not nominal cron time)`);
+    console.log(`[Date] Report window: ${window.startDateTime} to ${window.endDateTime} (Asia/Bangkok; source: ${window.source})`);
+}
+
 (async () => {
-    console.log(`--- Started GPS Report Automation (Day Shift) [${new Date().toLocaleString()}] ---`);
+    const startedAt = new Date();
+    let reportWindow;
+    try {
+        reportWindow = await resolveReportWindow({ startedAt });
+    } catch (error) {
+        console.error(`[Date] Stopped before GPS login: ${error.message}`);
+        process.exitCode = 1;
+        return;
+    }
+    logReportWindow(reportWindow, startedAt);
+    if (process.argv.includes('--check-report-date')) return;
+    const { reportDate, startDateTime, endDateTime } = reportWindow;
+    puppeteer = require('puppeteer');
+    Tesseract = require('tesseract.js');
+    nodemailer = require('nodemailer');
+    ExcelJS = require('exceljs');
+    ({ google } = require('googleapis'));
+    if (!fs.existsSync(downloadPath)) fs.mkdirSync(downloadPath);
     
     if (!config.gpsUser || !config.gpsPass) {
         console.warn("WARNING: GPS_USER or GPS_PASSWORD is missing.");
@@ -715,16 +805,6 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
         await selectOption('แจ้งเตือนการหลับตา');
         await reportPage.keyboard.press('Escape');
 
-        // NEW: Fix Timezone ให้เป็นเวลาประเทศไทย (GMT+7) เสมอ
-        const thaiDateObj = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Bangkok" }));
-        const yyyy = thaiDateObj.getFullYear();
-        const mm = String(thaiDateObj.getMonth() + 1).padStart(2, '0');
-        const dd = String(thaiDateObj.getDate()).padStart(2, '0');
-        const todayStr = `${yyyy}-${mm}-${dd}`;
-
-        const startDateTime = `${todayStr} 06:00:00`;
-        const endDateTime = `${todayStr} 18:00:00`;
-        
         console.log(`   Setting Time: ${startDateTime} to ${endDateTime}`);
 
         await clickByXPath(reportPage, '//div[contains(@class, "css-xn5mga")]//tr[3]//td[2]//input', 'Start Date');
@@ -761,7 +841,7 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
         const ext = path.extname(downloadedFile);
         if (!ext || (ext !== '.xls' && ext !== '.xlsx')) {
             const dir = path.dirname(downloadedFile);
-            const newName = `GPS_Report_Day_${todayStr}.xlsx`;
+            const newName = `GPS_Report_Day_${reportDate}.xlsx`;
             const newFilePath = path.join(dir, newName);
             if (fs.existsSync(newFilePath)) try { fs.unlinkSync(newFilePath); } catch(e) {}
             try { fs.renameSync(downloadedFile, newFilePath); downloadedFile = newFilePath; } catch (e) {}
@@ -781,12 +861,12 @@ async function clickByXPath(page, xpath, description = 'Element', timeout = 1000
         }
 
         // --- NEW STEP: Generate PDF ---
-        const pdfFilePath = await generatePDFSummary(page, pivotData, todayStr);
+        const pdfFilePath = await generatePDFSummary(page, pivotData, reportDate);
 
         // --- STEP 8: Email ---
         console.log(`8. Sending Email...`);
         await sendEmail(
-            `THAI TRACKING DMS REPORT: ${todayStr} (Day Shift)`, 
+            `THAI TRACKING DMS REPORT: ${reportDate} (Day Shift)`, 
             `ถึง ผู้เกี่ยวข้อง\n\nเรื่อง รายงาน THAI TRACKING DMS REPORT รอบ 06:00 ถึง 18:00 น. และ สรุปกราฟ PDF Top 10\n\nPassword 9999\nLink Dashboard and Monitoring Checksheet\n\nhttps://script.google.com/macros/s/AKfycbzhTXXdegU_3Sx9gaRtcAJdWsIpudOWq-sUW5rxDGsqt2eX31MR3Ikk6-fhAlaV8Yd0uw/exec\n\n\nด้วยความนับถือ\nBOT REPORT`, 
             [downloadedFile, pdfFilePath] 
         );
